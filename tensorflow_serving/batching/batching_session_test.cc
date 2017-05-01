@@ -36,6 +36,7 @@ namespace tensorflow {
 namespace serving {
 namespace {
 
+using ::testing::HasSubstr;
 using ::testing::UnorderedElementsAre;
 
 // A wrapper around a Session that captures the batch size.
@@ -49,9 +50,19 @@ class BatchSizeCapturingSession : public ServingSession {
              const std::vector<string>& output_tensor_names,
              const std::vector<string>& target_node_names,
              std::vector<Tensor>* outputs) override {
+    RunMetadata run_metadata;
+    return Run(RunOptions(), inputs, output_tensor_names, target_node_names,
+               outputs, &run_metadata);
+  }
+
+  Status Run(const RunOptions& run_options,
+             const std::vector<std::pair<string, Tensor>>& inputs,
+             const std::vector<string>& output_tensor_names,
+             const std::vector<string>& target_node_names,
+             std::vector<Tensor>* outputs, RunMetadata* run_metadata) override {
     latest_batch_size_ = inputs[0].second.shape().dim_size(0);
-    return wrapped_->Run(inputs, output_tensor_names, target_node_names,
-                         outputs);
+    return wrapped_->Run(run_options, inputs, output_tensor_names,
+                         target_node_names, outputs, run_metadata);
   }
 
   int latest_batch_size() const { return latest_batch_size_; }
@@ -134,13 +145,13 @@ TEST(BatchingSessionTest, TensorSignatureFromSignatureDefs) {
   const SignatureDef signature_def_0 =
       CreateSignatureDef({{"x0", "x1"}, {"y0", "y1"}});
   const SignatureDef signature_def_1 =
-      CreateSignatureDef({{"x1", "x2"}, {"y1", "y2"}});
+      CreateSignatureDef({{"x1", "x2"}, {"y1", "y3"}});
   const TensorSignature tensor_signature =
       TensorSignatureFromSignatureDefs({signature_def_0, signature_def_1});
   EXPECT_THAT(tensor_signature.input_tensors,
               UnorderedElementsAre("x0", "x1", "x2"));
   EXPECT_THAT(tensor_signature.output_tensors,
-              UnorderedElementsAre("y0", "y1", "y2"));
+              UnorderedElementsAre("y0", "y1", "y3"));
 }
 
 TEST(BatchingSessionTest, Basic) {
@@ -188,9 +199,9 @@ TEST(BatchingSessionTest, RequestThatDoesntMatchSignatureGetsRunAnyway) {
   std::unique_ptr<Session> batching_session;
   BatchingSessionOptions batching_session_options;
   TF_ASSERT_OK(CreateBasicBatchingSession(
-      schedule_options, batching_session_options, {{"x2"}, {"y2"}},
+      schedule_options, batching_session_options, {{"x2"}, {"y3"}},
       CreateHalfPlusTwoSession(), &batching_session));
-  // Issue a request using x/y, which doesn't match the x2/y2 signature.
+  // Issue a request using x/y, which doesn't match the x2/y3 signature.
   TestSingleRequest(100.0f, 42.0f, batching_session.get());
 }
 
@@ -288,7 +299,7 @@ TEST(BatchingSessionTest, DifferentOrderForInputAndOutputTensors) {
   BatchingSessionOptions batching_session_options;
   std::unique_ptr<Session> batching_session;
   TF_ASSERT_OK(CreateBasicBatchingSession(
-      schedule_options, batching_session_options, {{"x", "x2"}, {"y", "y2"}},
+      schedule_options, batching_session_options, {{"x", "x2"}, {"y", "y3"}},
       CreateHalfPlusTwoSession(), &batching_session));
 
   const Tensor input0 = test::AsTensor<float>({8.0f, 6.0f}, {2});
@@ -300,7 +311,7 @@ TEST(BatchingSessionTest, DifferentOrderForInputAndOutputTensors) {
       Env::Default()->StartThread(ThreadOptions(), "first_request_thread", [&] {
         std::vector<Tensor> outputs;
         TF_ASSERT_OK(batching_session->Run({{"x", input0}, {"x2", input1}},
-                                           {"y", "y2"} /* outputs */,
+                                           {"y", "y3"} /* outputs */,
                                            {} /* target nodes */, &outputs));
         ASSERT_EQ(2, outputs.size());
         test::ExpectTensorEqual<float>(expected_output0, outputs[0]);
@@ -310,7 +321,7 @@ TEST(BatchingSessionTest, DifferentOrderForInputAndOutputTensors) {
       ThreadOptions(), "second_request_thread", [&] {
         std::vector<Tensor> outputs;
         TF_ASSERT_OK(batching_session->Run({{"x2", input1}, {"x", input0}},
-                                           {"y2", "y"} /* outputs */,
+                                           {"y3", "y"} /* outputs */,
                                            {} /* target nodes */, &outputs));
         ASSERT_EQ(2, outputs.size());
         test::ExpectTensorEqual<float>(expected_output1, outputs[0]);
@@ -320,7 +331,7 @@ TEST(BatchingSessionTest, DifferentOrderForInputAndOutputTensors) {
       Env::Default()->StartThread(ThreadOptions(), "third_request_thread", [&] {
         std::vector<Tensor> outputs;
         TF_ASSERT_OK(batching_session->Run({{"x2", input1}, {"x", input0}},
-                                           {"y", "y2"} /* outputs */,
+                                           {"y", "y3"} /* outputs */,
                                            {} /* target nodes */, &outputs));
         ASSERT_EQ(2, outputs.size());
         test::ExpectTensorEqual<float>(expected_output0, outputs[0]);
@@ -349,7 +360,7 @@ TEST(BatchingSessionTest, MultipleSignatures) {
   std::unique_ptr<Session> batching_session;
   TF_CHECK_OK(CreateBatchingSession(
       batching_session_options, {{{{"x"}, {"y"}}, create_scheduler},
-                                 {{{"x2"}, {"y2"}}, create_scheduler}},
+                                 {{{"x2"}, {"y3"}}, create_scheduler}},
       CreateHalfPlusTwoSession(), &batching_session));
   ASSERT_EQ(2, schedulers.size());
 
@@ -367,7 +378,7 @@ TEST(BatchingSessionTest, MultipleSignatures) {
     Tensor input = test::AsTensor<float>({100.0f, 42.0f}, {2});
     Tensor expected_output = test::AsTensor<float>({53.0f, 24.0f}, {2});
     std::vector<Tensor> outputs;
-    TF_ASSERT_OK(batching_session->Run({{"x2", input}}, {"y2"} /* outputs */,
+    TF_ASSERT_OK(batching_session->Run({{"x2", input}}, {"y3"} /* outputs */,
                                        {} /* target nodes */, &outputs));
     ASSERT_EQ(1, outputs.size());
     test::ExpectTensorEqual<float>(expected_output, outputs[0]);
@@ -390,6 +401,61 @@ TEST(BatchingSessionTest, MultipleSignatures) {
   EXPECT_EQ(0, schedulers[0]->NumEnqueuedTasks());
   run_signature1_request();
   EXPECT_EQ(0, schedulers[1]->NumEnqueuedTasks());
+}
+
+TEST(BatchingSessionTest, EnqueuedLongerThanTimeout) {
+  BatchScheduler<BatchingSessionTask>* scheduler = nullptr;
+  auto create_scheduler = [&scheduler](
+      std::function<void(std::unique_ptr<Batch<BatchingSessionTask>>)>
+          process_batch_callback,
+      std::unique_ptr<BatchScheduler<BatchingSessionTask>>* new_scheduler) {
+    BasicBatchScheduler<BatchingSessionTask>::Options options;
+    options.max_batch_size = 4;                      // fits two 2-unit tasks
+    options.batch_timeout_micros = 1 * 1000 * 1000;  // won't trigger
+    options.num_batch_threads = 1;
+    std::unique_ptr<BasicBatchScheduler<BatchingSessionTask>> basic_scheduler;
+    TF_RETURN_IF_ERROR(BasicBatchScheduler<BatchingSessionTask>::Create(
+        options, process_batch_callback, &basic_scheduler));
+    scheduler = basic_scheduler.get();
+    *new_scheduler = std::move(basic_scheduler);
+    return Status::OK();
+  };
+  BatchingSessionOptions batching_session_options;
+  std::unique_ptr<Session> batching_session;
+  TF_CHECK_OK(CreateBatchingSession(
+      batching_session_options, {{{{"x"}, {"y"}}, create_scheduler}},
+      CreateHalfPlusTwoSession(), &batching_session));
+  ASSERT_FALSE(scheduler == nullptr);
+
+  // Enqueue a request with a timeout specified via RunOptions.
+  Notification request_returned;
+  auto issue_request = [&batching_session, &request_returned] {
+    Tensor input = test::AsTensor<float>({100.0f, 42.0f}, {2});
+    RunOptions run_options;
+    run_options.set_timeout_in_ms(1);
+    std::vector<Tensor> outputs;
+    RunMetadata run_metadata;
+    const Status status =
+        batching_session->Run(run_options, {{"x", input}}, {"y"} /* outputs */,
+                              {} /* target nodes */, &outputs, &run_metadata);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(error::RESOURCE_EXHAUSTED, status.code());
+    EXPECT_THAT(
+        status.error_message(),
+        HasSubstr("Run() timeout exceeded while waiting in batching queue"));
+    request_returned.Notify();
+  };
+  std::unique_ptr<Thread> request_thread(Env::Default()->StartThread(
+      ThreadOptions(), "request_thread", [&] { issue_request(); }));
+  while (scheduler->NumEnqueuedTasks() != 1) {
+    Env::Default()->SleepForMicroseconds(100);
+  }
+  // Sleep for longer than the request's timeout, so that when it does finally
+  // get dequeued for batch processing it has already exceeded its timeout.
+  Env::Default()->SleepForMicroseconds(10 * 1000);
+  // Tear down the batcher, so that it schedules the pending batch.
+  batching_session = nullptr;
+  request_returned.WaitForNotification();
 }
 
 }  // namespace

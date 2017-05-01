@@ -18,7 +18,7 @@ limitations under the License.
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow_serving/core/eager_load_policy.h"
+#include "tensorflow_serving/core/availability_preserving_policy.h"
 #include "tensorflow_serving/core/servable_data.h"
 #include "tensorflow_serving/core/servable_handle.h"
 #include "tensorflow_serving/core/servable_state_monitor.h"
@@ -27,7 +27,6 @@ limitations under the License.
 #include "tensorflow_serving/core/test_util/availability_test_util.h"
 #include "tensorflow_serving/core/test_util/fake_loader_source_adapter.h"
 #include "tensorflow_serving/core/test_util/fake_storage_path_source_adapter.h"
-#include "tensorflow_serving/core/test_util/source_adapter_test_util.h"
 #include "tensorflow_serving/util/event_bus.h"
 
 namespace tensorflow {
@@ -46,7 +45,8 @@ class AspiredVersionsManagerBuilderTest : public ::testing::Test {
         servable_state_monitor_(servable_event_bus_.get()) {
     AspiredVersionsManagerBuilder::Options manager_options;
     manager_options.servable_event_bus = servable_event_bus_.get();
-    manager_options.aspired_version_policy.reset(new EagerLoadPolicy());
+    manager_options.aspired_version_policy.reset(
+        new AvailabilityPreservingPolicy());
     TF_CHECK_OK(AspiredVersionsManagerBuilder::Create(
         std::move(manager_options), &builder_));
   }

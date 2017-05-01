@@ -34,7 +34,8 @@ namespace serving {
 namespace {
 
 // Implementation of Predict using the legacy SessionBundle GenericSignature.
-Status SessionBundlePredict(ServerCore* core, const PredictRequest& request,
+Status SessionBundlePredict(const RunOptions& run_options, ServerCore* core,
+                            const PredictRequest& request,
                             PredictResponse* response) {
   // Validate signatures.
   ServableHandle<SessionBundle> bundle;
@@ -111,8 +112,9 @@ Status SessionBundlePredict(ServerCore* core, const PredictRequest& request,
 
   // Run session.
   std::vector<Tensor> outputs;
-  TF_RETURN_IF_ERROR(
-      bundle->session->Run(inputs, output_tensor_names, {}, &outputs));
+  RunMetadata run_metadata;
+  TF_RETURN_IF_ERROR(bundle->session->Run(
+      run_options, inputs, output_tensor_names, {}, &outputs, &run_metadata));
 
   // Validate and return output.
   if (outputs.size() != output_tensor_names.size()) {
@@ -158,24 +160,18 @@ Status PreProcessPrediction(const SignatureDef& signature,
   }
   for (auto& input : request.inputs()) {
     const string& alias = input.first;
-    // When using a Prediction signature, tensors are aliased and the name is
-    // retrieved from the Tensor value, otherwise the alias (key) is the name.
-    string tensor_name = alias;
-    if (signature.method_name() == kPredictMethodName) {
-      auto iter = signature.inputs().find(alias);
-      if (iter == signature.inputs().end()) {
-        return tensorflow::Status(
-            tensorflow::error::INVALID_ARGUMENT,
-            "input tensor alias not found in signature: " + alias);
-      }
-      tensor_name = iter->second.name();
+    auto iter = signature.inputs().find(alias);
+    if (iter == signature.inputs().end()) {
+      return tensorflow::Status(
+          tensorflow::error::INVALID_ARGUMENT,
+          "input tensor alias not found in signature: " + alias);
     }
     Tensor tensor;
     if (!tensor.FromProto(input.second)) {
       return tensorflow::Status(tensorflow::error::INVALID_ARGUMENT,
                                 "tensor parsing error: " + alias);
     }
-    inputs->emplace_back(std::make_pair(tensor_name, tensor));
+    inputs->emplace_back(std::make_pair(iter->second.name(), tensor));
   }
 
   // Prepare run target.
@@ -202,13 +198,7 @@ Status PreProcessPrediction(const SignatureDef& signature,
   if (output_tensor_names->empty()) {
     for (auto& iter : signature.outputs()) {
       output_tensor_names->emplace_back(iter.second.name());
-      // When using a Prediction signature, the tensor output alias is the key
-      // in the map, otherwise we don't use aliases and just go by actual tensor
-      // names.
-      const string alias = signature.method_name() == kPredictMethodName
-                               ? iter.first
-                               : iter.second.name();
-      output_tensor_aliases->emplace_back(alias);
+      output_tensor_aliases->emplace_back(iter.first);
     }
   }
   return Status::OK();
@@ -232,7 +222,8 @@ Status PostProcessPredictionResult(
 }
 
 // Implementation of Predict using the SavedModel SignatureDef format.
-Status SavedModelPredict(ServerCore* core, const PredictRequest& request,
+Status SavedModelPredict(const RunOptions& run_options, ServerCore* core,
+                         const PredictRequest& request,
                          PredictResponse* response) {
   // Validate signatures.
   ServableHandle<SavedModelBundle> bundle;
@@ -255,8 +246,10 @@ Status SavedModelPredict(ServerCore* core, const PredictRequest& request,
                                           &output_tensor_names,
                                           &output_tensor_aliases));
   std::vector<Tensor> outputs;
-  TF_RETURN_IF_ERROR(
-      bundle->session->Run(input_tensors, output_tensor_names, {}, &outputs));
+  RunMetadata run_metadata;
+  TF_RETURN_IF_ERROR(bundle->session->Run(run_options, input_tensors,
+                                          output_tensor_names, {}, &outputs,
+                                          &run_metadata));
 
   return PostProcessPredictionResult(signature, output_tensor_aliases, outputs,
                                      response);
@@ -264,7 +257,8 @@ Status SavedModelPredict(ServerCore* core, const PredictRequest& request,
 
 }  // namespace
 
-Status TensorflowPredictor::Predict(ServerCore* core,
+Status TensorflowPredictor::Predict(const RunOptions& run_options,
+                                    ServerCore* core,
                                     const PredictRequest& request,
                                     PredictResponse* response) {
   if (!request.has_model_spec()) {
@@ -272,9 +266,9 @@ Status TensorflowPredictor::Predict(ServerCore* core,
                               "Missing ModelSpec");
   }
   if (use_saved_model_) {
-    return SavedModelPredict(core, request, response);
+    return SavedModelPredict(run_options, core, request, response);
   }
-  return SessionBundlePredict(core, request, response);
+  return SessionBundlePredict(run_options, core, request, response);
 }
 
 }  // namespace serving

@@ -72,6 +72,7 @@ cc_library(
         "//tensorflow_serving/core:storage_path",
         "@org_tensorflow//tensorflow/core:lib",
     ],
+    alwayslink = 1,
 )
 
 load("//tensorflow_serving:serving.bzl", "serving_proto_library")
@@ -109,20 +110,6 @@ cc_library(
 )
 
 cc_library(
-    name = "source_adapter_test_util",
-    testonly = 1,
-    hdrs = ["source_adapter_test_util.h"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "//external:gtest",
-        "//tensorflow_serving/core:loader",
-        "//tensorflow_serving/core:servable_data",
-        "//tensorflow_serving/core:servable_id",
-        "@org_tensorflow//tensorflow/core:lib",
-    ],
-)
-
-cc_library(
     name = "availability_test_util",
     testonly = 1,
     srcs = ["availability_test_util.cc"],
@@ -143,5 +130,67 @@ cc_library(
     deps = [
         "//tensorflow_serving/core:aspired_versions_manager",
         "//tensorflow_serving/core:caching_manager",
+    ],
+)
+
+cc_library(
+    name = "servable_handle_test_util",
+    testonly = 1,
+    hdrs = ["servable_handle_test_util.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tensorflow_serving/core:manager",
+        "//tensorflow_serving/core:servable_handle",
+        "//tensorflow_serving/core:servable_id",
+        "@org_tensorflow//tensorflow/core:lib",
+    ],
+)
+
+cc_library(
+    name = "mock_log_collector",
+    testonly = 1,
+    hdrs = ["mock_log_collector.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//external:gtest",
+        "//tensorflow_serving/core:log_collector",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@protobuf//:protobuf",
+    ],
+)
+
+cc_library(
+    name = "fake_log_collector",
+    testonly = 1,
+    hdrs = ["fake_log_collector.h"],
+    deps = [
+        "//external:gtest",
+        "//tensorflow_serving/core:log_collector",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@protobuf//:protobuf",
+    ],
+)
+
+cc_library(
+    name = "mock_request_logger",
+    testonly = 1,
+    hdrs = ["mock_request_logger.h"],
+    deps = [
+        "//external:gtest",
+        "//tensorflow_serving/core:logging_proto",
+        "//tensorflow_serving/core:request_logger",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@protobuf//:protobuf",
+    ],
+)
+
+cc_library(
+    name = "mock_session",
+    testonly = 1,
+    hdrs = ["mock_session.h"],
+    deps = [
+        "//external:gtest",
+        "@org_tensorflow//tensorflow/core:core_cpu",
+        "@org_tensorflow//tensorflow/core:lib",
     ],
 )

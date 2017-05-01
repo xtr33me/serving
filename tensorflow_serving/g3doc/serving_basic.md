@@ -14,12 +14,10 @@ tutorial.
 
 The code for this tutorial consists of two parts:
 
-* A Python file
-([mnist_export.py](https://github.com/tensorflow/serving/tree/master/tensorflow_serving/example/mnist_export.py))
+* A Python file, [mnist_saved_model.py](https://github.com/tensorflow/serving/tree/master/tensorflow_serving/example/mnist_saved_model.py),
 that trains and exports the model.
 
-* A C++ file
-[main.cc](https://github.com/tensorflow/serving/tree/master/tensorflow_serving/model_servers/main.cc)
+* A C++ file, [main.cc](https://github.com/tensorflow/serving/tree/master/tensorflow_serving/model_servers/main.cc),
 which is the standard TensorFlow model server that discovers new exported
 models and runs a [gRPC](http://www.grpc.io) service for serving them.
 
@@ -27,76 +25,114 @@ Before getting started, please complete the [prerequisites](setup.md#prerequisit
 
 ## Train And Export TensorFlow Model
 
-As you can see in `mnist_export.py`, the training is done the same way it is in
-the MNIST For ML Beginners tutorial. The TensorFlow graph is launched in
+As you can see in `mnist_saved_model.py`, the training is done the same way it
+is in the MNIST For ML Beginners tutorial. The TensorFlow graph is launched in
 TensorFlow session `sess`, with the input tensor (image) as `x` and output
 tensor (Softmax score) as `y`.
 
-Then we use TensorFlow Serving `Exporter` module to export the model.
-`Exporter` saves a "snapshot" of the trained model to reliable storage so that
-it can be loaded later for inference.
+Then we use TensorFlow's [SavedModelBuilder module](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/builder.py)
+to export the model. `SavedModelBuilder` saves a "snapshot" of the trained model
+to reliable storage so that it can be loaded later for inference.
+
+For details on the SavedModel format, please see the documentation at
+[SavedModel README.md](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/README.md).
+
+From [mnist_saved_model.py](https://github.com/tensorflow/serving/tree/master/tensorflow_serving/example/mnist_saved_model.py),
+the following is a short code snippet to illustrate the general process of
+saving a model to disk.
 
 ~~~python
-from tensorflow.contrib.session_bundle import exporter
+from tensorflow.python.saved_model import builder as saved_model_builder
 ...
-export_path = sys.argv[-1]
+export_path_base = sys.argv[-1]
+export_path = os.path.join(
+      compat.as_bytes(export_path_base),
+      compat.as_bytes(str(FLAGS.model_version)))
 print 'Exporting trained model to', export_path
-saver = tf.train.Saver(sharded=True)
-model_exporter = exporter.Exporter(saver)
-model_exporter.init(
-    sess.graph.as_graph_def(),
-    named_graph_signatures={
-        'inputs': exporter.generic_signature({'images': x}),
-        'outputs': exporter.generic_signature({'scores': y})})
-model_exporter.export(export_path, tf.constant(FLAGS.export_version), sess)
+builder = saved_model_builder.SavedModelBuilder(export_path)
+builder.add_meta_graph_and_variables(
+      sess, [tag_constants.SERVING],
+      signature_def_map={
+           'predict_images':
+               prediction_signature,
+           signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY:
+               classification_signature,
+      },
+      legacy_init_op=legacy_init_op)
+builder.save()
 ~~~
 
-`Exporter.__init__` takes a `tensorflow.train.Saver`, with the only requirement
-being that `Saver` should have `sharded=True`. `saver` is used to serialize
-graph variable values to the model export so that they can be properly restored
-later. Note that since no `variable_list` is specified for the `Saver`, it will
-export all variables of the graph. For more complex graphs, you can choose to
-export only the variables that will be used for inference.
+`SavedModelBuilder.__init__` takes the following argument:
 
-`Exporter.init()` takes the following arguments:
+* `export_path` is the path of the export directory.
 
-  * `sess.graph.as_graph_def()` is the
-  [protobuf](https://developers.google.com/protocol-buffers/) of the graph.
-  `export` will serialize the protobuf to the model export so that the
-  TensorFlow graph can be properly restored later.
+`SavedModelBuilder` will create the directory if it does not exist. In the
+example, we concatenate the command line argument and `FLAGS.model_version` to
+obtain the export directory. `FLAGS.model_version` specifies the **version** of
+the model. You should specify a larger integer value when exporting a newer
+version of the same model. Each version will be exported to a different
+sub-directory under the given path.
 
-  * `named_graph_signatures=...` specifies a model export **signature**.
-  Signature specifies what type of model is being exported, and the input/output
-  tensors to bind to when running inference. In this case, you use
-  `inputs` and `outputs` as keys for `exporter.generic_signature` as such a
-  signature is supported by the standard `tensorflow_model_server`:
+You can add meta graph and variables to the builder using
+`SavedModelBuilder.add_meta_graph_and_variables()` with the following arguments:
 
-    * `{'images': x}` specifies the input tensor binding.
-
-    * `{'scores': y}` specifies the scores tensor binding.
-
-    * `images` and `scores` are tensor alias names. They can be whatever
-    unique strings you want, and they will become the logical names of tensor
-    `x` and `y` that you refer to for tensor binding when sending prediction
-    requests later. For instance, if `x` refers to the tensor with name
-    'long_tensor_name_foo' and `y` refers to the tensor with name
-    'generated_tensor_name_bar', `exporter.generic_signature` will store
-    tensor logical name to real name mapping ('images' -> 'long_tensor_name_foo'
-    and 'scores' -> 'generated_tensor_name_bar') and allow user to refer to
-    these tensors with their logical names when running inference.
-
-`Exporter.export()` takes the following arguments:
-
-  * `export_path` is the path of the export directory. `export` will create the
-  directory if it does not exist.
-
-  * `tf.constant(FLAGS.export_version)` is a tensor that specifies the
-  **version** of the model. You should specify a larger integer value when
-  exporting a newer version of the same model. Each version will be exported to
-  a different sub-directory under the given path.
-
-  * `sess` is the TensorFlow session that holds the trained model you are
+* `sess` is the TensorFlow session that holds the trained model you are
   exporting.
+
+* `tags` is the set of tags with which to save the meta graph. In this case,
+  since we intend to use the graph in serving, we use the `serve` tag from
+  predefined SavedModel tag constants. For more details, see [tag_constants.py](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/tag_constants.py)
+  and [related TensorFlow 1.0 API documentation](https://www.tensorflow.org/api_docs/python/tf/saved_model/tag_constants).
+
+* `signature_def_map` specifies the map of user-supplied key for a
+  **signature** to a tensorflow::SignatureDef to add to the meta graph.
+  Signature specifies what type of model is being exported, and the
+  input/output tensors to bind to when running inference.
+
+  The special signature key `serving_default` specifies the default serving
+  signature. The default serving signature def key, along with other constants
+  related to signatures, are defined as part of SavedModel signature constants.
+  For more details, see [signature_constants.py](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/signature_constants.py)
+  and related [TensorFlow 1.0 API documentation](https://www.tensorflow.org/api_docs/python/tf/saved_model/signature_constants).
+
+  Further, to help build signature defs easily, the SavedModel API provides
+  [signature def utils](https://www.tensorflow.org/api_docs/python/tf/saved_model/signature_def_utils).
+  Specifically, in the `mnist_saved_model.py` code snippet above, we use
+  `signature_def_utils.build_signature_def()` to build `predict_signature` and
+  `classification_signature`.
+
+  As an example for how `predict_signature` is defined, the util takes the
+  following arguments:
+
+    * `inputs={'images': tensor_info_x}` specifies the input tensor info.
+
+    * `outputs={'scores': tensor_info_y}` specifies the scores tensor info.
+
+      Note that `tensor_info_x` and `tensor_info_y` have the structure of
+      `tensorflow::TensorInfo` protocol buffer defined [here](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/protobuf/meta_graph.proto).
+      To easily build tensor infos, the TensorFlow SavedModel API also provides
+      [utils.py](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/utils.py),
+      with [related TensorFlow 1.0 API documentation](https://www.tensorflow.org/api_docs/python/tf/saved_model/utils).
+
+      Also, note that `images` and `scores` are tensor alias names. They can be
+      whatever unique strings you want, and they will become the logical names
+      of tensor `x` and `y` that you refer to for tensor binding when sending
+      prediction requests later.
+
+      For instance, if `x` refers to the tensor with name 'long_tensor_name_foo'
+      and `y` refers to the tensor with name 'generated_tensor_name_bar',
+      `builder` will store tensor logical name to real name mapping
+      ('images' -> 'long_tensor_name_foo') and ('scores' -> 'generated_tensor_name_bar').
+      This allows the user to refer to these tensors with their logical names
+      when running inference.
+
+    * `method_name` is the method used for the inference. For Prediction
+      requests, it should be set to `tensorflow/serving/predict`. For other
+      method names, see [signature_constants.py](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/saved_model/signature_constants.py)
+      and related [TensorFlow 1.0 API documentation](https://www.tensorflow.org/api_docs/python/tf/saved_model/signature_constants).
+
+  In addition to the description above, documentation related to signature def
+  structure and how to set up them up can be found [here](https://github.com/tensorflow/serving/blob/master/tensorflow_serving/g3doc/signature_defs.md).
 
 Let's run it!
 
@@ -107,8 +143,8 @@ $>rm -rf /tmp/mnist_model
 ~~~
 
 ~~~shell
-$>bazel build //tensorflow_serving/example:mnist_export
-$>bazel-bin/tensorflow_serving/example/mnist_export /tmp/mnist_model
+$>bazel build //tensorflow_serving/example:mnist_saved_model
+$>bazel-bin/tensorflow_serving/example/mnist_saved_model /tmp/mnist_model
 Training model...
 
 ...
@@ -122,27 +158,25 @@ Now let's take a look at the export directory.
 
 ~~~shell
 $>ls /tmp/mnist_model
-00000001
+1
 ~~~
 
 As mentioned above, a sub-directory will be created for exporting each version
-of the model. You specified `tf.constant(FLAGS.export_version)` as the model
-version above, and `FLAGS.export_version` has the default value of 1, therefore
-the corresponding sub-directory `00000001` is created.
+of the model. `FLAGS.model_version` has the default value of 1, therefore
+the corresponding sub-directory `1` is created.
 
 ~~~shell
-$>ls /tmp/mnist_model/00000001
-checkpoint export-00000-of-00001 export.meta
+$>ls /tmp/mnist_model/1
+saved_model.pb variables
 ~~~
 
 Each version sub-directory contains the following files:
 
-  * `export.meta` is the serialized tensorflow::MetaGraphDef of the model. It
-  includes the graph definition of the model, as well as metadata of the model
-  such as signatures.
+  * `saved_model.pb` is the serialized tensorflow::SavedModel. It includes the
+  the one or more graph definitions of the model, as well as metadata of the
+  model such as signatures.
 
-  * `export-?????-of-?????` are files that hold the serialized variables of
-  the graph.
+  * `variables` are files that hold the serialized variables of the graphs.
 
 With that, your TensorFlow model is exported and ready to be loaded!
 

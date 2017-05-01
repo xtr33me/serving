@@ -26,10 +26,10 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "tensorflow/contrib/batching/basic_batch_scheduler.h"
+#include "tensorflow/contrib/batching/batch_scheduler.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
 #include "tensorflow/core/public/session.h"
-#include "tensorflow_serving/batching/basic_batch_scheduler.h"
-#include "tensorflow_serving/batching/batch_scheduler.h"
 
 namespace tensorflow {
 namespace serving {
@@ -167,6 +167,8 @@ struct BatchingSessionTask : public BatchTask {
   size_t size() const override { return zeroth_dim_size; }
 
   // Fields populated when a task is received.
+  uint64 enqueue_time_micros;
+  RunOptions run_options;
   size_t zeroth_dim_size;
   const std::vector<std::pair<string, Tensor>>* inputs;
   const std::vector<string>* output_tensor_names;
@@ -175,6 +177,7 @@ struct BatchingSessionTask : public BatchTask {
   Notification* done;
   Status* status;
   std::vector<Tensor>* outputs;
+  RunMetadata* run_metadata;
 };
 
 }  // namespace serving

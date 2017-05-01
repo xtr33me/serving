@@ -126,6 +126,20 @@ class BatchingSession : public ServingSession {
              const std::vector<string>& target_node_names,
              std::vector<Tensor>* outputs) override;
 
+  // RunOptions handling:
+  // Since multiple of these Run() calls get backed into a single call to the
+  // underlying Session's Run(), we select an arbitrary 'run_options' (typically
+  // they are the same across calls). The exception is the timeout; we take the
+  // largest value (after subtracting time spent in the batching queue).
+  //
+  // RunMetadata:
+  // We copy the batched call's RunMetadata to each non-batched call's output.
+  Status Run(const RunOptions& run_options,
+             const std::vector<std::pair<string, Tensor>>& inputs,
+             const std::vector<string>& output_tensor_names,
+             const std::vector<string>& target_node_names,
+             std::vector<Tensor>* outputs, RunMetadata* run_metadata) override;
+
  private:
   explicit BatchingSession(const BatchingSessionOptions& options);
 
@@ -206,6 +220,17 @@ Status BatchingSession::Run(
     const std::vector<string>& output_tensor_names,
     const std::vector<string>& target_node_names,
     std::vector<Tensor>* outputs) {
+  RunMetadata run_metadata;
+  return Run(RunOptions(), inputs, output_tensor_names, target_node_names,
+             outputs, &run_metadata);
+}
+
+Status BatchingSession::Run(
+    const RunOptions& run_options,
+    const std::vector<std::pair<string, Tensor>>& inputs,
+    const std::vector<string>& output_tensor_names,
+    const std::vector<string>& target_node_names, std::vector<Tensor>* outputs,
+    RunMetadata* run_metadata) {
   if (!target_node_names.empty()) {
     return errors::PermissionDenied(
         "BatchingSession does not support target nodes");
@@ -217,8 +242,11 @@ Status BatchingSession::Run(
   if (batch_scheduler_it == batch_schedulers_.end()) {
     // We have a Run() call that doesn't match one of our batching signatures.
     // Run it in-line.
-    return wrapped_->Run(inputs, output_tensor_names, target_node_names,
-                         outputs);
+    LOG(WARNING) << "Request doesn't match any declared signature. Bypassing "
+                    "batcher. Request signature is: "
+                 << TensorSignatureDebugString(signature);
+    return wrapped_->Run(run_options, inputs, output_tensor_names,
+                         target_node_names, outputs, run_metadata);
   }
   BatchScheduler<BatchingSessionTask>* batch_scheduler =
       batch_scheduler_it->second.get();
@@ -228,12 +256,15 @@ Status BatchingSession::Run(
   Notification done;
   Status status;
   auto task = std::unique_ptr<BatchingSessionTask>(new BatchingSessionTask);
+  task->enqueue_time_micros = Env::Default()->NowMicros();
+  task->run_options = run_options;
   TF_RETURN_IF_ERROR(ComputeInputSize(inputs, &task->zeroth_dim_size));
   task->inputs = &inputs;
   task->output_tensor_names = &output_tensor_names;
   task->done = &done;
   task->status = &status;
   task->outputs = outputs;
+  task->run_metadata = run_metadata;
 
   TF_RETURN_IF_ERROR(batch_scheduler->Schedule(&task));
   done.WaitForNotification();
@@ -345,7 +376,14 @@ Status BatchingSession::MergeInputTensors(
       return errors::Internal(
           "One or more tasks does not conform to batch signature");
     }
-    merged_inputs->push_back({tensor_name, tensor::Concat(tensors->second)});
+    Tensor concated;
+    const Status concat_status = tensor::Concat(tensors->second, &concated);
+    DCHECK(concat_status.ok()) << concat_status.ToString();
+    if (!concat_status.ok()) {
+      return errors::Internal("Tensor concat operation failed: ",
+                              concat_status.ToString());
+    }
+    merged_inputs->push_back({tensor_name, concated});
   }
 
   return Status::OK();
@@ -395,8 +433,14 @@ Status BatchingSession::SplitOutputTensors(
           "0th dimension sizes of the input tensors");
     }
 
-    std::vector<Tensor> split_tensor =
-        tensor::Split(tensor, task_sizes_plus_optional_padding);
+    std::vector<Tensor> split_tensor;
+    const Status split_status =
+        tensor::Split(tensor, task_sizes_plus_optional_padding, &split_tensor);
+    DCHECK(split_status.ok()) << split_status.ToString();
+    if (!split_status.ok()) {
+      return errors::Internal("Tensor split operation failed: ",
+                              split_status.ToString());
+    }
     DCHECK_EQ(split_tensor.size(), task_sizes_plus_optional_padding.size());
     if (split_tensor.size() != task_sizes_plus_optional_padding.size()) {
       return errors::Internal(
@@ -435,17 +479,54 @@ void BatchingSession::ProcessBatch(
     return;
   }
 
-  Status status;
+  const uint64 dequeue_time_micros = Env::Default()->NowMicros();
 
   // Regardless of the outcome, we need to propagate the status to the
   // individual tasks and signal that they are done. We use MakeCleanup() to
   // ensure that this happens no matter how we exit the method below.
+  Status status;
   auto finally = MakeCleanup([&status, &batch] {
     for (int i = 0; i < batch->num_tasks(); ++i) {
       *batch->mutable_task(i)->status = status;
       batch->mutable_task(i)->done->Notify();
     }
   });
+
+  // Make sure we have at least one task that hasn't exceeded its timeout from
+  // queue time alone, and find the latest task deadline which we'll use for the
+  // overall batch.
+  bool all_tasks_timeout_exceeded = true;
+  uint64 batch_deadline_micros = 0;
+  for (int i = 0; i < batch->num_tasks(); ++i) {
+    const BatchingSessionTask& task = batch->task(i);
+    // If the caller doesn't populate RunOptions, the timeout is 0 by default.
+    // Interpret that as "no timeout" i.e. infinity.
+    const int64 task_timeout_micros =
+        task.run_options.timeout_in_ms() <= 0
+            ? INT_MAX
+            : task.run_options.timeout_in_ms() * 1000;
+    const uint64 task_deadline_micros =
+        task.enqueue_time_micros + task_timeout_micros;
+    if (task_deadline_micros > dequeue_time_micros) {
+      all_tasks_timeout_exceeded = false;
+      if (task_deadline_micros > batch_deadline_micros) {
+        batch_deadline_micros = task_deadline_micros;
+      }
+    }
+  }
+  if (all_tasks_timeout_exceeded) {
+    status = Status(error::RESOURCE_EXHAUSTED,
+                    "Run() timeout exceeded while waiting in batching queue");
+    return;
+  }
+
+  RunOptions run_options = batch->task(0).run_options;
+  if (batch_deadline_micros == INT_MAX) {
+    run_options.set_timeout_in_ms(0);
+  } else {
+    run_options.set_timeout_in_ms(
+        (batch_deadline_micros - dequeue_time_micros) / 1000);
+  }
 
   std::vector<std::pair<string, Tensor>> merged_inputs;
   status = MergeInputTensors(signature, *batch, &merged_inputs);
@@ -456,8 +537,13 @@ void BatchingSession::ProcessBatch(
   const std::vector<string> output_tensor_names(
       signature.output_tensors.begin(), signature.output_tensors.end());
   std::vector<Tensor> combined_outputs;
-  status = wrapped_->Run(merged_inputs, output_tensor_names,
-                         {} /* target node names */, &combined_outputs);
+  RunMetadata run_metadata;
+  status = wrapped_->Run(run_options, merged_inputs, output_tensor_names,
+                         {} /* target node names */, &combined_outputs,
+                         &run_metadata);
+  for (int i = 0; i < batch->num_tasks(); ++i) {
+    *(batch->mutable_task(i)->run_metadata) = run_metadata;
+  }
   if (!status.ok()) {
     return;
   }

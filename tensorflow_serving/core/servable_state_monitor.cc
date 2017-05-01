@@ -28,17 +28,11 @@ void EraseLiveStatesEntry(
   const int64 version = state_and_time.state.id.version;
   auto servable_map_it = live_states->find(servable_name);
   if (servable_map_it == live_states->end()) {
-    DCHECK(!state_and_time.state.health.ok())
-        << "Servable: " << state_and_time
-        << " is not in error and directly went to state kEnd.";
     return;
   }
   auto& version_map = servable_map_it->second;
   auto version_map_it = version_map.find(version);
   if (version_map_it == version_map.end()) {
-    DCHECK(!state_and_time.state.health.ok())
-        << "Servable: " << state_and_time
-        << " is not in error and directly went to state kEnd.";
     return;
   }
 
@@ -114,6 +108,12 @@ ServableStateMonitor::ServableStateMonitor(EventBus<ServableState>* bus,
           [this](const EventBus<ServableState>::EventAndTime& state_and_time) {
             this->HandleEvent(state_and_time);
           })) {}
+
+ServableStateMonitor::~ServableStateMonitor() {
+  // Halt event handling first, before tearing down state that event handling
+  // may access such as 'servable_state_notification_requests_'.
+  bus_subscription_ = nullptr;
+}
 
 optional<ServableStateMonitor::ServableStateAndTime>
 ServableStateMonitor::GetStateAndTimeInternal(

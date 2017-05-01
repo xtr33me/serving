@@ -62,6 +62,7 @@ cc_library(
         "//tensorflow_serving/core:dynamic_source_router",
         "//tensorflow_serving/core:load_servables_fast",
         "//tensorflow_serving/core:servable_state_monitor",
+        "//tensorflow_serving/core:server_request_logger",
         "//tensorflow_serving/core:source",
         "//tensorflow_serving/core:source_adapter",
         "//tensorflow_serving/core:storage_path",
@@ -85,16 +86,20 @@ cc_test(
     deps = [
         ":server_core",
         "//tensorflow_serving/apis:model_proto",
+        "//tensorflow_serving/apis:predict_proto",
         "//tensorflow_serving/core:servable_handle",
         "//tensorflow_serving/core:servable_state",
         "//tensorflow_serving/core/test_util:availability_test_util",
         "//tensorflow_serving/core/test_util:fake_loader_source_adapter_proto",
+        "//tensorflow_serving/core/test_util:fake_log_collector",
+        "//tensorflow_serving/core/test_util:mock_request_logger",
         "//tensorflow_serving/core/test_util:test_main",
         "//tensorflow_serving/model_servers/test_util:server_core_test_util",
         "//tensorflow_serving/model_servers/test_util:storage_path_error_injecting_source_adapter",
         "//tensorflow_serving/model_servers/test_util:storage_path_error_injecting_source_adapter_proto",
         "//tensorflow_serving/test_util",
         "@org_tensorflow//tensorflow/core:test",
+        "@protobuf//:cc_wkt_protos",
     ],
 )
 
@@ -105,6 +110,10 @@ SUPPORTED_TENSORFLOW_OPS = [
 
 TENSORFLOW_DEPS = [
     "@org_tensorflow//tensorflow/core:tensorflow",
+    "//tensorflow_serving/servables/tensorflow:classification_service",
+    "//tensorflow_serving/servables/tensorflow:get_model_metadata_impl",
+    "//tensorflow_serving/servables/tensorflow:multi_inference",
+    "//tensorflow_serving/servables/tensorflow:regression_service",
     "//tensorflow_serving/servables/tensorflow:saved_model_bundle_source_adapter",
     "//tensorflow_serving/servables/tensorflow:session_bundle_source_adapter",
     "//tensorflow_serving/servables/tensorflow:predict_impl",
@@ -125,7 +134,7 @@ cc_binary(
         "@org_tensorflow//tensorflow/core/platform/cloud:gcs_file_system",
         "//tensorflow_serving/apis:prediction_service_proto",
         "//tensorflow_serving/config:model_server_config_proto",
-        "//tensorflow_serving/core:eager_load_policy",
+        "//tensorflow_serving/core:availability_preserving_policy",
         "@grpc//:grpc++",
     ] + TENSORFLOW_DEPS + SUPPORTED_TENSORFLOW_OPS,
 )
@@ -138,15 +147,20 @@ py_test(
         ":tensorflow_model_server",
         "//tensorflow_serving/servables/tensorflow/testdata:bad_half_plus_two/00000123/export",
         "//tensorflow_serving/servables/tensorflow/testdata:bad_half_plus_two/00000123/export.meta",
+        "//tensorflow_serving/servables/tensorflow/testdata:bad_model_config.txt",
+        "//tensorflow_serving/servables/tensorflow/testdata:batching_config.txt",
+        "//tensorflow_serving/servables/tensorflow/testdata:good_model_config.txt",
         "//tensorflow_serving/servables/tensorflow/testdata:half_plus_two/00000123/export.data-00000-of-00001",
         "//tensorflow_serving/servables/tensorflow/testdata:half_plus_two/00000123/export.index",
         "//tensorflow_serving/servables/tensorflow/testdata:half_plus_two/00000123/export.meta",
+        "//tensorflow_serving/servables/tensorflow/testdata:saved_model_half_plus_three/00000123/assets/foo.txt",
+        "//tensorflow_serving/servables/tensorflow/testdata:saved_model_half_plus_three/00000123/saved_model.pb",
+        "//tensorflow_serving/servables/tensorflow/testdata:saved_model_half_plus_three/00000123/variables/variables.data-00000-of-00001",
+        "//tensorflow_serving/servables/tensorflow/testdata:saved_model_half_plus_three/00000123/variables/variables.index",
         "@org_tensorflow//tensorflow/cc/saved_model:saved_model_half_plus_two",
     ],
-    tags = [
-        "local",
-        "manual",
-    ],
+    # TODO(b/36008812): Remove this tag.
+    tags = ["manual"],
     deps = [
         "//tensorflow_serving/apis:prediction_service_proto_py_pb2",
         "@org_tensorflow//tensorflow:tensorflow_py",
