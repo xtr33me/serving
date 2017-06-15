@@ -132,6 +132,7 @@ cc_binary(
         "@protobuf//:cc_wkt_protos",
         "@org_tensorflow//tensorflow/core:lib",
         "@org_tensorflow//tensorflow/core/platform/cloud:gcs_file_system",
+        "@org_tensorflow//tensorflow/core/platform/hadoop:hadoop_file_system",
         "//tensorflow_serving/apis:prediction_service_proto",
         "//tensorflow_serving/config:model_server_config_proto",
         "//tensorflow_serving/core:availability_preserving_policy",
@@ -141,7 +142,7 @@ cc_binary(
 
 py_test(
     name = "tensorflow_model_server_test",
-    size = "large",
+    size = "medium",
     srcs = ["tensorflow_model_server_test.py"],
     data = [
         ":tensorflow_model_server",
