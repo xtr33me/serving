@@ -169,8 +169,41 @@ py_test(
 py_binary(
     name = "tensorflow_model_server_test_client",
     srcs = ["tensorflow_model_server_test_client.py"],
+    srcs_version = "PY2AND3",
     deps = [
         "//tensorflow_serving/apis:prediction_service_proto_py_pb2",
         "@org_tensorflow//tensorflow:tensorflow_py",
     ],
+)
+
+load("@bazel_tools//tools/build_defs/pkg:pkg.bzl", "pkg_deb", "pkg_tar")
+
+pkg_tar(
+    name = "tensorflow_model_server_tar",
+    files = [
+        ":tensorflow_model_server",
+    ],
+    package_dir = "/usr/bin",
+)
+
+# Build with '-c opt --copt=-mavx --copt=-msse4.2'
+pkg_deb(
+    name = "tensorflow_model_server_deb",
+    data = ":tensorflow_model_server_tar",
+    description = "TensorFlow Serving ModelServer",
+    homepage = "https://github.com/tensorflow/serving",
+    maintainer = "TensorFlow Serving team",
+    package = "tensorflow-model-server",
+    version = "1.0.0",
+)
+
+# Build with '-c opt'
+pkg_deb(
+    name = "tensorflow_model_server_universal_deb",
+    data = ":tensorflow_model_server_tar",
+    description = "TensorFlow Serving ModelServer",
+    homepage = "https://github.com/tensorflow/serving",
+    maintainer = "TensorFlow Serving team",
+    package = "tensorflow-model-server-universal",
+    version = "1.0.0",
 )
